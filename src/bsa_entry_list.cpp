@@ -1,5 +1,6 @@
 #include "bsa_entry_list.hpp"
-#include "iostream"
+
+#include <array>
 
 namespace libbsarch {
 
@@ -21,12 +22,16 @@ std::vector<fs::path> bsa_entry_list::list() const
     list.reserve(count);
 
     for (uint32_t i = 0; i < count; ++i)
-    {
-        wchar_t buffer[max_string_buffer_size];
-        bsa_entry_list_get(entries_.get(), i, max_string_buffer_size, buffer);
-        list.push_back(buffer);
-    }
+        list.emplace_back(get(i));
+
     return list;
+}
+
+std::filesystem::path bsa_entry_list::get(uint32_t index) const
+{
+    std::array<wchar_t, max_string_buffer_size> buffer{};
+    bsa_entry_list_get(entries_.get(), index, max_string_buffer_size, buffer.data());
+    return buffer.data();
 }
 
 const detail::bsa_entry_list_wrapper &bsa_entry_list::get_unchecked() const

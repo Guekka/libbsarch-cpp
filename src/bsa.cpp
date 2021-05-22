@@ -1,6 +1,9 @@
 #include "bsa.hpp"
 #include "for_each.hpp"
 
+#include <fstream>
+#include <numeric>
+
 namespace libbsarch {
 
 /* Properties */
@@ -100,31 +103,60 @@ extracted_data bsa::extract_to_memory(const fs::path &relative_path) const
 
 void bsa::extract_to_disk(const fs::path &relative_path,
                           const fs::path &absolute_path,
-                          bool overwrite_current_files) const
+                          bool overwrite_existing) const
 {
-    const bool exist = fs::exists(absolute_path);
-    if (exist && !overwrite_current_files)
-        return;
+    auto record = find_file_record(relative_path);
+    extract_to_disk(record, absolute_path, overwrite_existing);
+}
 
-    if (exist)
-        fs::remove(absolute_path);
+void bsa::extract_to_disk(file_record record,
+                          const std::filesystem::path &absolute_path,
+                          bool overwrite_existing) const
+{
+    {
+        static std::mutex mut;
+        std::lock_guard g(mut);
 
-    const auto &result = bsa_extract_file(archive_.get(),
-                                          relative_path.wstring().c_str(),
-                                          absolute_path.wstring().c_str());
-    checkResult(result);
+        const bool exist = fs::exists(absolute_path);
+        if (exist && !overwrite_existing)
+            return;
+
+        if (exist)
+            fs::remove(absolute_path);
+    }
+
+    auto data = extract_to_memory(record);
+
+    std::fstream file(absolute_path, std::ios::out | std::ios::binary);
+    file.write(static_cast<const char *>(data.get_buffer()), data.get_size());
 }
 
 void bsa::extract_all_to_disk(const fs::path &directory, bool overwrite_current_files) const
 {
-    const auto files = list_files();
-    for_each(files, [this, overwrite_current_files, directory](auto &&relative_path) {
-        fs::path absolute_path = directory / relative_path;
-        fs::path absolute_directory = fs::path(absolute_path).remove_filename();
+    std::vector<uint32_t> indexes(get_file_count());
+    std::iota(indexes.begin(), indexes.end(), 0);
 
-        fs::create_directories(absolute_directory);
-        extract_to_disk(relative_path, absolute_path, overwrite_current_files);
-    });
+    for_each(indexes.cbegin(), indexes.cend(), [this, overwrite_current_files, directory](auto &&idx) {
+	      auto record = get_file_record(idx);
+	      auto relative_path = get_relative_path(idx);
+	
+	      fs::path absolute_path = directory / relative_path;
+	      fs::path absolute_directory = fs::path(absolute_path).remove_filename();
+	
+	      {
+	          static std::mutex mut;
+	          std::lock_guard g(mut);
+	          fs::create_directories(absolute_directory);
+	      }
+	      try
+	      {
+	          extract_to_disk(record, absolute_path, overwrite_current_files);
+	      }
+	      catch (const std::exception &e)
+	      {
+	          std::cerr << e.what() << std::endl;
+	      }
+	  });
 }
 
 void bsa::iterate_files(bsa_file_iteration_proc_t file_iteration_proc, void *context) const
@@ -132,9 +164,24 @@ void bsa::iterate_files(bsa_file_iteration_proc_t file_iteration_proc, void *con
     bsa_iterate_files(archive_.get(), file_iteration_proc, context);
 }
 
+file_record bsa::get_file_record(uint32_t index) const
+{
+    return {bsa_get_file_record(archive_.get(), index)};
+}
+
 file_record bsa::find_file_record(const fs::path &filename) const
 {
     return {bsa_find_file_record(archive_.get(), filename.wstring().c_str())};
+}
+
+std::filesystem::path bsa::get_relative_path(uint32_t index) const
+{
+    bsa_entry_list list;
+    const auto &result = bsa_get_resource_list(archive_.get(), list.get_unchecked().get(), L"");
+
+    checkResult(result);
+
+    return list.get(index);
 }
 
 std::vector<fs::path> bsa::list_files() const
